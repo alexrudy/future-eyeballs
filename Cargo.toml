@@ -2,6 +2,15 @@
 name = "future-eyeballs"
 version = "0.1.0"
 edition = "2024"
+description = "A futures collection for racing futures against each other."
+license = "MIT"
+repository = "https://github.com/alexrudy/future-eyeballs"
+documentation = "https://docs.rs/future-eyeballs"
+rust-version = "1.87"
+readme = "README.md"
+authors = ["Alex Rudy <opensource@alexrudy.net>"]
+keywords = ["futures", "concurrency", "async"]
+
 
 [dependencies]
 futures = { version = "0.3", package = "futures-util", default-features = false, features = [
