@@ -1,0 +1,14 @@
+[package]
+name = "future-eyeballs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures = { version = "0.3", package = "futures-util", default-features = false, features = [
+    "std",
+] }
+tokio = { version = "1", features = ["time"] }
+tracing = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt"] }
