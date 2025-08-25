@@ -20,9 +20,9 @@ use tracing::trace;
 /// (this will always be the first error)
 ///
 /// Otherwsie, the enum indicates what went wrong.
-#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq)]
-pub enum HappyEyeballsError<T> {
+#[non_exhaustive]
+pub enum HappyEyeballsError<E> {
     /// The timeout was reached.
     Timeout(Duration),
 
@@ -30,7 +30,7 @@ pub enum HappyEyeballsError<T> {
     NoProgress,
 
     /// An error occurred during the underlying future.
-    Error(T),
+    Error(E),
 }
 
 impl<T> fmt::Display for HappyEyeballsError<T>
@@ -60,11 +60,20 @@ where
 
 type HappyEyeballsResult<T, E> = Result<T, HappyEyeballsError<E>>;
 
+/// Configuration for the happy eyeballs future collection.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct EyeballConfiguration {
+    /// How long to wait before starting the next future.
     pub concurrent_start_delay: Option<Duration>,
+
+    /// Overall algorithm timeout
     pub overall_timeout: Option<Duration>,
+
+    /// How many futures to spawn at the beginning
     pub initial_concurrency: Option<usize>,
+
+    /// The maximum number of simultaneous futures to spawn
     pub maximum_concurrency: Option<usize>,
 }
 
@@ -164,14 +173,26 @@ where
     }
 
     async fn process_all(&mut self) -> HappyEyeballsResult<T, E> {
-        for _ in 0..self.config.initial_concurrency.unwrap_or(self.queue.len()) {
+        let mut initial_concurrency = (self.config.initial_concurrency.unwrap_or(self.queue.len()));
+        if let Some(maximum_concurrency) = self.config.maximum_concurrency {
+            initial_concurrency = initial_concurrency.min(maximum_concurrency);
+        }
+
+        for _ in 0..initial_concurrency {
             if let Some(future) = self.queue.pop_front() {
                 self.tasks.push(future);
             }
         }
 
         loop {
-            if self.queue.is_empty() {
+            // Either the queue is empty, or we are already driving the maximum number of
+            // concurrent futures, so all we can do is wait for the next future to finish.
+            if self.queue.is_empty()
+                || self
+                    .config
+                    .maximum_concurrency
+                    .is_some_and(|c| c <= self.tasks.len())
+            {
                 match self.join_next().await {
                     Eyeball::Ok(outcome) => return Ok(outcome),
                     Eyeball::Error => continue,
@@ -184,18 +205,25 @@ where
                     }
                 }
             } else {
+                // The queue isn't empty, and we can handle more concurrency.
+                //
+                // Wait until the next time we can spawn a new future.
                 if let Ok(Eyeball::Ok(output)) = self.join_next_with_delay().await {
                     return Ok(output);
                 }
 
-                if self
-                    .config
-                    .maximum_concurrency
-                    .is_none_or(|c| self.tasks.len() < c)
-                {
-                    if let Some(future) = self.queue.pop_front() {
-                        self.tasks.push(future);
-                    }
+                // Add another future to the set of futures we are driving.
+                //
+                // This is ok because we checked for the maximum concurrency condition above.
+                debug_assert!(
+                    self.config
+                        .maximum_concurrency
+                        .is_none_or(|c| c > self.tasks.len())
+                );
+                // Also okay because we checked if the queue was empty above.
+                debug_assert!(!self.queue.is_empty());
+                if let Some(future) = self.queue.pop_front() {
+                    self.tasks.push(future);
                 }
             }
         }
@@ -218,7 +246,11 @@ where
     }
 }
 
-pub struct EyeballFuture<T, E>(BoxFuture<'static, Result<T, E>>);
+/// Future returned by a happy-eyeball set waiting to finish.
+///
+/// An alternative to calling [`EyeballSet::finish`] with a named
+/// future.
+pub struct EyeballFuture<T, E>(BoxFuture<'static, HappyEyeballsResult<T, E>>);
 
 impl<T, E> fmt::Debug for EyeballFuture<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -227,7 +259,7 @@ impl<T, E> fmt::Debug for EyeballFuture<T, E> {
 }
 
 impl<T, E> Future for EyeballFuture<T, E> {
-    type Output = Result<T, E>;
+    type Output = HappyEyeballsResult<T, E>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -244,10 +276,10 @@ where
     F: Future<Output = Result<T, E>> + Send + 'static,
 {
     type Output = HappyEyeballsResult<T, E>;
-    type IntoFuture = BoxFuture<'static, Self::Output>;
+    type IntoFuture = EyeballFuture<T, E>;
 
     fn into_future(mut self) -> Self::IntoFuture {
-        Box::pin(async move { self.finish().await })
+        EyeballFuture(Box::pin(async move { self.finish().await }))
     }
 }
 
